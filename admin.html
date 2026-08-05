@@ -19,19 +19,23 @@
       <button id="btn-atualizar" class="secondary">Atualizar resultados</button>
       <div id="status" class="status-msg"></div>
 
-      <table id="tabela-resultados" style="display:none">
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Grupo</th>
-            <th>Projeto</th>
-            <th>Status</th>
-            <th>Pontuação</th>
-            <th>Justificativa</th>
-          </tr>
-        </thead>
-        <tbody id="corpo-tabela"></tbody>
-      </table>
+      <div class="table-wrap">
+        <table id="tabela-resultados" style="display:none">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Grupo</th>
+              <th>Projeto</th>
+              <th>Status</th>
+              <th>Nota individual</th>
+              <th>Nota final</th>
+              <th>Justificativa individual</th>
+              <th>Comentário da recalibração</th>
+            </tr>
+          </thead>
+          <tbody id="corpo-tabela"></tbody>
+        </table>
+      </div>
       <p id="msg-vazio" class="muted" style="display:none">Nenhum resultado ainda. Envie projetos e clique em "Avaliar todos os grupos".</p>
     </div>
   </div>

@@ -11,7 +11,8 @@
  */
 
 var HEADERS = ['Timestamp Envio', 'Grupo', 'Projeto', 'Drive File Id', 'Drive File Url',
-  'Status', 'Score', 'Justificativa', 'Selecionado', 'Timestamp Avaliacao'];
+  'Status', 'Score Individual', 'Justificativa Individual', 'Score Final',
+  'Comentario Recalibracao', 'Selecionado', 'Timestamp Avaliacao'];
 
 function doPost(e) {
   var payload;
@@ -101,10 +102,10 @@ function handleSubmit_(payload) {
       try { DriveApp.getFileById(oldFileId).setTrashed(true); } catch (err) { /* arquivo já removido */ }
     }
     sheet.getRange(rowIndex, 1, 1, HEADERS.length).setValues([[
-      now, grupo, projeto, file.getId(), file.getUrl(), 'pendente', '', '', '', ''
+      now, grupo, projeto, file.getId(), file.getUrl(), 'pendente', '', '', '', '', '', ''
     ]]);
   } else {
-    sheet.appendRow([now, grupo, projeto, file.getId(), file.getUrl(), 'pendente', '', '', '', '']);
+    sheet.appendRow([now, grupo, projeto, file.getId(), file.getUrl(), 'pendente', '', '', '', '', '', '']);
   }
 
   return { ok: true, message: 'Recebido com sucesso' };
@@ -124,7 +125,9 @@ function handleEvaluate_() {
     var data = sheet.getDataRange().getValues();
     var topX = Number(getProp_('TOP_X', '8'));
 
-    var results = [];
+    // Etapa 1: nota individual por projeto, cada PDF avaliado isoladamente.
+    var avaliados = [];
+    var comErro = [];
     for (var i = 1; i < data.length; i++) {
       var row = data[i];
       var grupo = row[1], projeto = row[2], fileId = row[3];
@@ -135,32 +138,121 @@ function handleEvaluate_() {
         var blob = DriveApp.getFileById(fileId).getBlob();
         var base64Pdf = Utilities.base64Encode(blob.getBytes());
         var evalResult = callOpenRouter_(base64Pdf, criteriaText, projeto, grupo);
-        sheet.getRange(rowNumber, 6, 1, 5).setValues([[
-          'avaliado', evalResult.score, evalResult.justificativa, false, new Date()
-        ]]);
-        results.push({ grupo: grupo, projeto: projeto, score: evalResult.score,
-          justificativa: evalResult.justificativa, erro: false, _row: rowNumber });
+        avaliados.push({
+          grupo: grupo, projeto: projeto,
+          scoreIndividual: evalResult.score, justificativaIndividual: evalResult.justificativa,
+          _row: rowNumber
+        });
       } catch (err) {
-        sheet.getRange(rowNumber, 6, 1, 5).setValues([[
-          'erro', '', String(err), false, new Date()
-        ]]);
-        results.push({ grupo: grupo, projeto: projeto, score: null,
-          justificativa: 'Erro na avaliação: ' + String(err), erro: true, _row: rowNumber });
+        comErro.push({ grupo: grupo, projeto: projeto, erro: String(err), _row: rowNumber });
       }
       Utilities.sleep(1000);
     }
 
-    results.sort(function (a, b) { return (b.score || -1) - (a.score || -1); });
-    for (var r = 0; r < results.length; r++) {
-      results[r].selecionado = r < topX && !results[r].erro;
-      sheet.getRange(results[r]._row, 9).setValue(results[r].selecionado);
-      delete results[r]._row;
+    // Etapa 2: recalibração vendo todos os grupos avaliados de uma vez (só texto, sem PDF),
+    // para corrigir distorções de comparar notas que foram dadas em chamadas isoladas.
+    var ranqueados;
+    if (avaliados.length > 0) {
+      try {
+        ranqueados = recalibrar_(criteriaText, avaliados, topX);
+      } catch (err) {
+        ranqueados = avaliados.slice().sort(function (a, b) { return b.scoreIndividual - a.scoreIndividual; });
+        ranqueados.forEach(function (r, idx) {
+          r.scoreFinal = r.scoreIndividual;
+          r.comentarioRecalibracao = 'Recalibração indisponível, mantida nota individual: ' + String(err);
+          r.selecionado = idx < topX;
+        });
+      }
+    } else {
+      ranqueados = [];
     }
 
-    return { ok: true, resultados: results };
+    ranqueados.forEach(function (r) {
+      sheet.getRange(r._row, 6, 1, 7).setValues([[
+        'avaliado', r.scoreIndividual, r.justificativaIndividual, r.scoreFinal,
+        r.comentarioRecalibracao, r.selecionado, new Date()
+      ]]);
+    });
+    comErro.forEach(function (r) {
+      sheet.getRange(r._row, 6, 1, 7).setValues([[
+        'erro', '', r.erro, '', '', false, new Date()
+      ]]);
+    });
+
+    var resultados = ranqueados.map(function (r) {
+      return {
+        grupo: r.grupo, projeto: r.projeto, status: 'avaliado',
+        score_individual: r.scoreIndividual, justificativa_individual: r.justificativaIndividual,
+        score_final: r.scoreFinal, comentario_recalibracao: r.comentarioRecalibracao,
+        selecionado: r.selecionado, erro: false
+      };
+    }).concat(comErro.map(function (r) {
+      return {
+        grupo: r.grupo, projeto: r.projeto, status: 'erro',
+        score_individual: null, justificativa_individual: r.erro,
+        score_final: null, comentario_recalibracao: null,
+        selecionado: false, erro: true
+      };
+    }));
+
+    resultados.sort(function (a, b) { return (b.score_final || -1) - (a.score_final || -1); });
+
+    return { ok: true, resultados: resultados };
   } finally {
     lock.releaseLock();
   }
+}
+
+// Pede a uma segunda chamada (só texto) para comparar todas as notas individuais de uma vez
+// e devolver um ranking final calibrado. Trata grupos omitidos/inventados pela IA e garante
+// que no máximo topX fiquem marcados como selecionados, mesmo se a resposta exagerar.
+function recalibrar_(criteriaText, avaliados, topX) {
+  var ranking = callRecalibracao_(criteriaText, avaliados, topX);
+
+  var porGrupo = {};
+  avaliados.forEach(function (a) { porGrupo[normalize_(a.grupo)] = a; });
+
+  var vistos = {};
+  var resultado = [];
+
+  ranking.forEach(function (item) {
+    var original = porGrupo[normalize_(item.grupo)];
+    if (!original) return; // grupo inventado pela IA, ignora
+    vistos[normalize_(item.grupo)] = true;
+    resultado.push({
+      grupo: original.grupo, projeto: original.projeto,
+      scoreIndividual: original.scoreIndividual, justificativaIndividual: original.justificativaIndividual,
+      scoreFinal: (typeof item.score_final === 'number' && !isNaN(item.score_final)) ? item.score_final : original.scoreIndividual,
+      comentarioRecalibracao: item.comentario || '',
+      selecionado: !!item.selecionado,
+      _row: original._row
+    });
+  });
+
+  avaliados.forEach(function (a) {
+    if (!vistos[normalize_(a.grupo)]) {
+      resultado.push({
+        grupo: a.grupo, projeto: a.projeto,
+        scoreIndividual: a.scoreIndividual, justificativaIndividual: a.justificativaIndividual,
+        scoreFinal: a.scoreIndividual,
+        comentarioRecalibracao: '(grupo omitido na recalibração; mantida nota individual)',
+        selecionado: false,
+        _row: a._row
+      });
+    }
+  });
+
+  resultado.sort(function (a, b) { return (b.scoreFinal || -1) - (a.scoreFinal || -1); });
+
+  var selecionadosCount = 0;
+  resultado.forEach(function (r) {
+    if (r.selecionado) {
+      selecionadosCount++;
+      if (selecionadosCount > topX) r.selecionado = false;
+    }
+  });
+
+  return resultado;
 }
 
 function handleResults_() {
@@ -174,12 +266,15 @@ function handleResults_() {
       grupo: row[1],
       projeto: row[2],
       status: row[5],
-      score: row[6] === '' ? null : Number(row[6]),
-      justificativa: row[7],
-      selecionado: row[8] === true
+      score_individual: row[6] === '' ? null : Number(row[6]),
+      justificativa_individual: row[7],
+      score_final: row[8] === '' ? null : Number(row[8]),
+      comentario_recalibracao: row[9],
+      selecionado: row[10] === true,
+      erro: row[5] === 'erro'
     });
   }
-  results.sort(function (a, b) { return (b.score || -1) - (a.score || -1); });
+  results.sort(function (a, b) { return (b.score_final || -1) - (a.score_final || -1); });
   return { ok: true, resultados: results };
 }
 
@@ -252,4 +347,82 @@ function callOpenRouter_(base64Pdf, criteriaText, projectName, groupName) {
     throw new Error('OpenRouter HTTP ' + code + ': ' + response.getContentText());
   }
   throw new Error(lastError || 'Falha ao chamar o OpenRouter após 3 tentativas');
+}
+
+// Segunda chamada à IA, só com texto (sem reenviar os PDFs): compara as notas individuais
+// de todos os grupos ao mesmo tempo e devolve um ranking final calibrado + seleção dos top X.
+function callRecalibracao_(criteriaText, avaliados, topX) {
+  var apiKey = getProp_('OPENROUTER_API_KEY');
+  if (!apiKey) throw new Error('OPENROUTER_API_KEY não configurada nas Propriedades do Script');
+  var model = getProp_('OPENROUTER_MODEL', 'google/gemini-2.5-flash');
+  var url = 'https://openrouter.ai/api/v1/chat/completions';
+
+  var listaTexto = avaliados.map(function (a, idx) {
+    return (idx + 1) + '. Grupo: ' + a.grupo + ' | Projeto: ' + (a.projeto || '(não informado)') +
+      ' | Nota individual: ' + a.scoreIndividual + ' | Justificativa: ' + a.justificativaIndividual;
+  }).join('\n');
+
+  var prompt = [
+    'Você é um avaliador sênior de um hackathon corporativo, revisando notas dadas individualmente',
+    'a cada projeto por outro avaliador que analisou cada PDF isoladamente, sem comparar com os demais.',
+    '',
+    '=== CRITÉRIOS DE AVALIAÇÃO ===',
+    criteriaText,
+    '=== FIM DOS CRITÉRIOS ===',
+    '',
+    'Notas individuais (isoladas) de cada grupo:',
+    listaTexto,
+    '',
+    'Agora que você vê TODOS os grupos ao mesmo tempo, produza um ranking final calibrado,',
+    'ajustando a ordem quando a comparação direta entre os projetos sugerir que uma nota',
+    'isolada ficou alta ou baixa demais em relação às demais. Selecione exatamente os ' + topX,
+    'melhores como selecionado=true (menos apenas se algum projeto claramente não atender',
+    'aos critérios mínimos).',
+    '',
+    'Responda APENAS com um JSON no formato exato, sem markdown, incluindo TODOS os ' + avaliados.length + ' grupos:',
+    '{"ranking": [{"grupo": "<nome exato do grupo>", "score_final": <numero 0-100>, "selecionado": <true|false>, "comentario": "<até 2 frases sobre a posição no ranking>"}]}'
+  ].join('\n');
+
+  var body = {
+    model: model,
+    messages: [{ role: 'user', content: prompt }]
+  };
+
+  var options = {
+    method: 'post',
+    contentType: 'application/json',
+    headers: {
+      'Authorization': 'Bearer ' + apiKey,
+      'HTTP-Referer': 'https://script.google.com',
+      'X-Title': 'Avaliador Hackathon'
+    },
+    payload: JSON.stringify(body),
+    muteHttpExceptions: true
+  };
+
+  var lastError = null;
+  for (var attempt = 0; attempt < 3; attempt++) {
+    var response = UrlFetchApp.fetch(url, options);
+    var code = response.getResponseCode();
+
+    if (code === 200) {
+      var json = JSON.parse(response.getContentText());
+      var text = json.choices[0].message.content;
+      var cleaned = String(text).replace(/```json/gi, '').replace(/```/g, '').trim();
+      var parsed = JSON.parse(cleaned);
+      if (!parsed.ranking || !Array.isArray(parsed.ranking)) {
+        throw new Error('Resposta de recalibração sem "ranking" válido');
+      }
+      return parsed.ranking;
+    }
+
+    if (code === 429 || code >= 500) {
+      lastError = 'HTTP ' + code + ': ' + response.getContentText();
+      Utilities.sleep(2000 * (attempt + 1));
+      continue;
+    }
+
+    throw new Error('OpenRouter HTTP ' + code + ': ' + response.getContentText());
+  }
+  throw new Error(lastError || 'Falha ao chamar o OpenRouter (recalibração) após 3 tentativas');
 }

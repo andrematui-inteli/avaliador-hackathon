@@ -31,14 +31,17 @@
     tabela.style.display = 'table';
     corpoTabela.innerHTML = resultados.map((row, i) => {
       const linhaClasse = row.selecionado ? 'selecionado' : (row.status === 'erro' || row.erro ? 'erro' : '');
+      const fmt = (v) => (v === null || v === undefined || v === '' ? '-' : v);
       return `
         <tr class="${linhaClasse}">
           <td>${i + 1}${row.selecionado ? ' 🏆' : ''}</td>
           <td>${escapeHtml(row.grupo)}</td>
           <td>${escapeHtml(row.projeto || '-')}</td>
           <td>${badge(row)}</td>
-          <td>${row.score === null || row.score === undefined ? '-' : row.score}</td>
-          <td>${escapeHtml(row.justificativa || '-')}</td>
+          <td>${fmt(row.score_individual)}</td>
+          <td><strong>${fmt(row.score_final)}</strong></td>
+          <td>${escapeHtml(row.justificativa_individual || '-')}</td>
+          <td>${escapeHtml(row.comentario_recalibracao || '-')}</td>
         </tr>`;
     }).join('');
   }
