@@ -2,9 +2,9 @@
  * Backend do Avaliador de Hackathon.
  *
  * Script Properties necessárias (Configurações do projeto > Propriedades do script):
- *   GEMINI_API_KEY    - chave da API do Gemini
- *   GEMINI_MODEL      - ex. "gemini-2.5-flash" (opcional, default abaixo)
- *   TOP_X             - quantos grupos selecionar (opcional, default 8)
+ *   OPENROUTER_API_KEY - chave da API do OpenRouter (openrouter.ai)
+ *   OPENROUTER_MODEL   - ex. "google/gemini-2.5-flash" (opcional, default abaixo)
+ *   TOP_X               - quantos grupos selecionar (opcional, default 8)
  *   CRITERIA_DOC_ID   - ID do Google Doc com os critérios de avaliação
  *   DRIVE_FOLDER_ID   - ID da pasta do Drive onde os PDFs são salvos
  *   SHEET_ID          - ID da Planilha usada como banco de dados
@@ -134,7 +134,7 @@ function handleEvaluate_() {
       try {
         var blob = DriveApp.getFileById(fileId).getBlob();
         var base64Pdf = Utilities.base64Encode(blob.getBytes());
-        var evalResult = callGemini_(base64Pdf, criteriaText, projeto, grupo);
+        var evalResult = callOpenRouter_(base64Pdf, criteriaText, projeto, grupo);
         sheet.getRange(rowNumber, 6, 1, 5).setValues([[
           'avaliado', evalResult.score, evalResult.justificativa, false, new Date()
         ]]);
@@ -183,12 +183,11 @@ function handleResults_() {
   return { ok: true, resultados: results };
 }
 
-function callGemini_(base64Pdf, criteriaText, projectName, groupName) {
-  var apiKey = getProp_('GEMINI_API_KEY');
-  if (!apiKey) throw new Error('GEMINI_API_KEY não configurada nas Propriedades do Script');
-  var model = getProp_('GEMINI_MODEL', 'gemini-2.5-flash');
-  var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model +
-    ':generateContent?key=' + apiKey;
+function callOpenRouter_(base64Pdf, criteriaText, projectName, groupName) {
+  var apiKey = getProp_('OPENROUTER_API_KEY');
+  if (!apiKey) throw new Error('OPENROUTER_API_KEY não configurada nas Propriedades do Script');
+  var model = getProp_('OPENROUTER_MODEL', 'google/gemini-2.5-flash');
+  var url = 'https://openrouter.ai/api/v1/chat/completions';
 
   var prompt = [
     'Você é um avaliador de um hackathon corporativo. Avalie o projeto descrito no PDF anexado',
@@ -201,23 +200,32 @@ function callGemini_(base64Pdf, criteriaText, projectName, groupName) {
     'Grupo: ' + groupName,
     'Projeto: ' + (projectName || '(não informado)'),
     '',
-    'Responda APENAS com um JSON no formato exato:',
+    'Responda APENAS com um JSON no formato exato, sem markdown:',
     '{"score": <numero de 0 a 100>, "justificativa": "<explicação em até 3 frases>"}'
   ].join('\n');
 
   var body = {
-    contents: [{
-      parts: [
-        { text: prompt },
-        { inlineData: { mimeType: 'application/pdf', data: base64Pdf } }
+    model: model,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'text', text: prompt },
+        {
+          type: 'file',
+          file: { filename: 'projeto.pdf', file_data: 'data:application/pdf;base64,' + base64Pdf }
+        }
       ]
-    }],
-    generationConfig: { responseMimeType: 'application/json' }
+    }]
   };
 
   var options = {
     method: 'post',
     contentType: 'application/json',
+    headers: {
+      'Authorization': 'Bearer ' + apiKey,
+      'HTTP-Referer': 'https://script.google.com',
+      'X-Title': 'Avaliador Hackathon'
+    },
     payload: JSON.stringify(body),
     muteHttpExceptions: true
   };
@@ -229,8 +237,8 @@ function callGemini_(base64Pdf, criteriaText, projectName, groupName) {
 
     if (code === 200) {
       var json = JSON.parse(response.getContentText());
-      var text = json.candidates[0].content.parts[0].text;
-      var cleaned = text.replace(/```json/gi, '').replace(/```/g, '').trim();
+      var text = json.choices[0].message.content;
+      var cleaned = String(text).replace(/```json/gi, '').replace(/```/g, '').trim();
       var parsed = JSON.parse(cleaned);
       return { score: Number(parsed.score), justificativa: String(parsed.justificativa || '') };
     }
@@ -241,7 +249,7 @@ function callGemini_(base64Pdf, criteriaText, projectName, groupName) {
       continue;
     }
 
-    throw new Error('Gemini HTTP ' + code + ': ' + response.getContentText());
+    throw new Error('OpenRouter HTTP ' + code + ': ' + response.getContentText());
   }
-  throw new Error(lastError || 'Falha ao chamar o Gemini após 3 tentativas');
+  throw new Error(lastError || 'Falha ao chamar o OpenRouter após 3 tentativas');
 }
