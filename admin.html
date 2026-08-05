@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>Painel do Organizador — Hackathon</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="container wide">
+    <header class="page-header">
+      <h1>Painel do organizador</h1>
+      <p>Dispare a avaliação por IA de todos os projetos enviados e veja o ranking.</p>
+    </header>
+
+    <div class="card">
+      <button id="btn-avaliar">Avaliar todos os grupos</button>
+      <button id="btn-atualizar" class="secondary">Atualizar resultados</button>
+      <div id="status" class="status-msg"></div>
+
+      <table id="tabela-resultados" style="display:none">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Grupo</th>
+            <th>Projeto</th>
+            <th>Status</th>
+            <th>Pontuação</th>
+            <th>Justificativa</th>
+          </tr>
+        </thead>
+        <tbody id="corpo-tabela"></tbody>
+      </table>
+      <p id="msg-vazio" class="muted" style="display:none">Nenhum resultado ainda. Envie projetos e clique em "Avaliar todos os grupos".</p>
+    </div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="admin.js"></script>
+</body>
+</html>

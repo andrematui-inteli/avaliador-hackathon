@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Envio de Projeto — Hackathon</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="container">
+    <header class="page-header">
+      <h1>Envio do descritivo do projeto</h1>
+      <p>Envie o PDF com a descrição do projeto do seu grupo. Se enviar de novo, o arquivo anterior do grupo é substituído.</p>
+    </header>
+
+    <div class="card">
+      <form id="form-submissao">
+        <label for="grupo">Nome do grupo *</label>
+        <input type="text" id="grupo" name="grupo" required maxlength="120" placeholder="Ex.: Equipe Alfa" />
+
+        <label for="projeto">Nome do projeto</label>
+        <input type="text" id="projeto" name="projeto" maxlength="120" placeholder="Ex.: Sistema de recomendação X" />
+
+        <label for="arquivo">Descritivo do projeto (PDF) *</label>
+        <input type="file" id="arquivo" name="arquivo" accept="application/pdf" required />
+
+        <button type="submit" id="btn-enviar">Enviar projeto</button>
+      </form>
+
+      <div id="status" class="status-msg"></div>
+    </div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="submit.js"></script>
+</body>
+</html>
