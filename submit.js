@@ -4,10 +4,39 @@
   const form = document.getElementById('form-submissao');
   const btn = document.getElementById('btn-enviar');
   const statusEl = document.getElementById('status');
+  const feedbackCard = document.getElementById('feedback');
+  const feedbackConteudo = document.getElementById('feedback-conteudo');
 
   function setStatus(kind, message) {
     statusEl.className = 'status-msg visible ' + kind;
     statusEl.innerHTML = message;
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = String(str);
+    return div.innerHTML;
+  }
+
+  function renderSecao(titulo, itens) {
+    if (!itens || !itens.length) return '';
+    const lis = itens.map((item) => `<li>${escapeHtml(item)}</li>`).join('');
+    return `<h3>${titulo}</h3><ul>${lis}</ul>`;
+  }
+
+  function renderFeedback(feedback) {
+    if (!feedback) {
+      feedbackCard.style.display = 'none';
+      return;
+    }
+    feedbackConteudo.innerHTML = [
+      feedback.resumo ? `<p class="feedback-resumo">${escapeHtml(feedback.resumo)}</p>` : '',
+      renderSecao('Pontos fortes', feedback.pontos_fortes),
+      renderSecao('Pontos de atenção', feedback.pontos_de_atencao),
+      renderSecao('Sugestões', feedback.sugestoes)
+    ].join('');
+    feedbackCard.style.display = 'block';
+    feedbackCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
   function fileToBase64(file) {
@@ -48,7 +77,8 @@
     }
 
     btn.disabled = true;
-    setStatus('info', '<span class="spinner"></span>Enviando projeto...');
+    feedbackCard.style.display = 'none';
+    setStatus('info', '<span class="spinner"></span>Enviando projeto e analisando o descritivo... isso pode levar até um minuto.');
 
     try {
       const base64Data = await fileToBase64(file);
@@ -67,7 +97,9 @@
       const result = await response.json();
       if (!result.ok) throw new Error(result.error || 'Falha desconhecida');
 
-      setStatus('success', `Projeto do grupo <strong>${grupo}</strong> enviado com sucesso!`);
+      setStatus('success', `Projeto do grupo <strong>${escapeHtml(grupo)}</strong> registrado! ` +
+        (result.feedback ? 'Veja o feedback abaixo.' : escapeHtml(result.message || '')));
+      renderFeedback(result.feedback);
       form.reset();
     } catch (err) {
       setStatus('error', 'Não foi possível enviar o projeto: ' + err.message);

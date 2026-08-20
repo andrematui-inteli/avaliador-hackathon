@@ -60,13 +60,13 @@
     });
     const result = await response.json();
     if (!result.ok) throw new Error(result.error || 'Falha desconhecida');
-    return result.resultados || [];
+    return result;
   }
 
   async function carregarResultados() {
     setStatus('info', '<span class="spinner"></span>Carregando resultados...');
     try {
-      const resultados = await callApi('results');
+      const { resultados } = await callApi('results');
       renderResultados(resultados);
       setStatus('', '');
     } catch (err) {
@@ -76,9 +76,8 @@
 
   btnAvaliar.addEventListener('click', async () => {
     const confirmado = confirm(
-      'Isso vai avaliar TODOS os grupos com submissão pendente ou já avaliada, ' +
-      'usando os critérios atuais do documento e a chave do Gemini configurada. ' +
-      'Pode levar alguns minutos. Continuar?'
+      'Isso vai reavaliar TODOS os grupos que enviaram projeto, usando os critérios ' +
+      'atuais do documento. Pode levar alguns minutos. Continuar?'
     );
     if (!confirmado) return;
 
@@ -86,9 +85,11 @@
     btnAtualizar.disabled = true;
     setStatus('info', '<span class="spinner"></span>Avaliando grupos, isso pode levar alguns minutos...');
     try {
-      const resultados = await callApi('evaluate');
+      const { resultados, top_x } = await callApi('evaluate');
       renderResultados(resultados);
-      setStatus('success', `Avaliação concluída para ${resultados.length} grupo(s).`);
+      const recomendados = resultados.filter((r) => r.selecionado).length;
+      setStatus('success', `Avaliação concluída para ${resultados.length} grupo(s). ` +
+        `${recomendados} grupo(s) recomendado(s) para apresentar${top_x ? ` (meta: top ${top_x})` : ''}.`);
     } catch (err) {
       setStatus('error', 'Erro ao avaliar: ' + err.message);
     } finally {

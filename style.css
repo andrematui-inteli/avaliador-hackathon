@@ -126,6 +126,36 @@ button.secondary {
 .status-msg.success { background: rgba(52, 199, 123, 0.12); color: var(--success); }
 .status-msg.error { background: rgba(239, 90, 90, 0.12); color: var(--danger); }
 
+.feedback-card {
+  margin-top: 20px;
+}
+
+.feedback-card h2 {
+  font-size: 1.15rem;
+  margin: 0 0 4px;
+}
+
+.feedback-card h3 {
+  font-size: 0.95rem;
+  margin: 20px 0 6px;
+  color: var(--accent);
+}
+
+.feedback-card ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.feedback-card li {
+  margin-bottom: 6px;
+  line-height: 1.5;
+}
+
+.feedback-resumo {
+  margin: 16px 0 0;
+  line-height: 1.55;
+}
+
 .table-wrap {
   overflow-x: auto;
   margin-top: 20px;
