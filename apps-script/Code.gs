@@ -57,6 +57,8 @@ function doPost(e) {
         return jsonResponse_(handleResults_());
       case 'diagnostico':
         return jsonResponse_(handleDiagnostico_());
+      case 'reset':
+        return jsonResponse_(handleReset_(payload));
       default:
         return jsonResponse_({ ok: false, error: 'Ação desconhecida: ' + payload.action });
     }
@@ -763,6 +765,40 @@ function extrairJson_(texto) {
     }
   }
   throw new Error('A IA devolveu JSON incompleto: ' + limpo.substring(0, 300));
+}
+
+var CONFIRMACAO_RESET = 'APAGAR TUDO';
+
+/**
+ * Apaga todas as submissões: limpa as linhas da planilha (preservando o cabeçalho) e
+ * manda os PDFs para a lixeira do Drive. Serve para zerar os dados de teste antes do
+ * evento. Exige a frase de confirmação exata, para nunca ser acionado por engano.
+ */
+function handleReset_(payload) {
+  if (String(payload.confirmacao || '') !== CONFIRMACAO_RESET) {
+    throw new Error('Para apagar tudo, envie confirmacao com o texto exato "' +
+      CONFIRMACAO_RESET + '"');
+  }
+
+  return withSheetLock_(function () {
+    var sheet = getSheet_();
+    var ultimaLinha = sheet.getLastRow();
+    if (ultimaLinha < 2) return { ok: true, linhas_apagadas: 0, pdfs_removidos: 0 };
+
+    var fileIds = sheet.getRange(2, COL.FILE_ID, ultimaLinha - 1, 1).getValues();
+    var removidos = 0;
+    fileIds.forEach(function (linha) {
+      var id = linha[0];
+      if (!id) return;
+      try {
+        DriveApp.getFileById(id).setTrashed(true);
+        removidos++;
+      } catch (err) { /* arquivo já removido */ }
+    });
+
+    sheet.deleteRows(2, ultimaLinha - 1);
+    return { ok: true, linhas_apagadas: ultimaLinha - 1, pdfs_removidos: removidos };
+  });
 }
 
 /**

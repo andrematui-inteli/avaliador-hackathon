@@ -113,6 +113,17 @@ button.secondary {
   color: var(--text);
 }
 
+button.danger {
+  background: transparent;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+}
+
+button.danger:hover:not(:disabled) {
+  background: var(--danger);
+  color: #fff;
+}
+
 .status-msg {
   margin-top: 16px;
   padding: 12px 14px;

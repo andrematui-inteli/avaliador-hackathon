@@ -2,6 +2,8 @@
   const btnAvaliar = document.getElementById('btn-avaliar');
   const btnAtualizar = document.getElementById('btn-atualizar');
   const btnDiagnostico = document.getElementById('btn-diagnostico');
+  const btnReset = document.getElementById('btn-reset');
+  const CONFIRMACAO_RESET = 'APAGAR TUDO';
   const statusEl = document.getElementById('status');
   const tabela = document.getElementById('tabela-resultados');
   const corpoTabela = document.getElementById('corpo-tabela');
@@ -121,6 +123,37 @@
       setStatus('error', 'Não foi possível verificar: ' + err.message);
     } finally {
       btnDiagnostico.disabled = false;
+    }
+  });
+
+  btnReset.addEventListener('click', async () => {
+    const digitado = prompt(
+      'Isso apaga TODAS as submissões da planilha e manda os PDFs para a lixeira do Drive. ' +
+      'A ação não pode ser desfeita pelo painel.\n\n' +
+      `Para confirmar, digite exatamente: ${CONFIRMACAO_RESET}`
+    );
+    if (digitado !== CONFIRMACAO_RESET) {
+      if (digitado !== null) setStatus('info', 'Nada foi apagado: o texto de confirmação não corresponde.');
+      return;
+    }
+
+    btnReset.disabled = true;
+    setStatus('info', '<span class="spinner"></span>Apagando submissões...');
+    try {
+      const response = await fetch(APPS_SCRIPT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action: 'reset', confirmacao: CONFIRMACAO_RESET })
+      });
+      const result = await response.json();
+      if (!result.ok) throw new Error(result.error || 'Falha desconhecida');
+      setStatus('success', `${result.linhas_apagadas} submissão(ões) apagada(s) e ` +
+        `${result.pdfs_removidos} PDF(s) enviado(s) para a lixeira.`);
+      renderResultados([]);
+    } catch (err) {
+      setStatus('error', 'Erro ao apagar: ' + err.message);
+    } finally {
+      btnReset.disabled = false;
     }
   });
 
