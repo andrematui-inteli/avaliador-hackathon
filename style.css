@@ -137,6 +137,40 @@ button.danger:hover:not(:disabled) {
 .status-msg.success { background: rgba(52, 199, 123, 0.12); color: var(--success); }
 .status-msg.error { background: rgba(239, 90, 90, 0.12); color: var(--danger); }
 
+.card.aviso {
+  margin-bottom: 20px;
+  border-left: 3px solid var(--accent);
+  padding: 16px 20px;
+}
+
+.card.aviso p {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+details {
+  font-size: 0.9rem;
+}
+
+details summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+details summary:hover { color: var(--accent); }
+
+.checklist {
+  margin: 12px 0 0;
+  padding-left: 22px;
+  line-height: 1.6;
+}
+
+.checklist li { margin-bottom: 8px; }
+
+.card + .card { margin-top: 20px; }
+
 .feedback-card {
   margin-top: 20px;
 }

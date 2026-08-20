@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Envio de Projeto — Hackathon</title>
-  <link rel="stylesheet" href="style.css?v=5" />
+  <link rel="stylesheet" href="style.css?v=6" />
 </head>
 <body>
   <div class="container">
@@ -12,6 +12,13 @@
       <h1>Envio do descritivo do projeto</h1>
       <p>Envie o PDF com a descrição do projeto do seu grupo e receba um feedback na hora. Você pode enviar quantas vezes quiser — a submissão mais recente do grupo é a que vale.</p>
     </header>
+
+    <div class="card aviso">
+      <p><strong>O PDF precisa ter texto selecionável.</strong> A análise lê o texto do
+      documento, então exporte como PDF (não use foto nem print de tela) e não deixe
+      informação essencial apenas dentro de imagens ou diagramas — o que estiver só na
+      imagem não será considerado.</p>
+    </div>
 
     <div class="card">
       <form id="form-submissao">
@@ -35,9 +42,34 @@
       <p class="muted">Análise qualitativa para ajudar seu grupo a evoluir o projeto. Não há notas nem posição no ranking aqui.</p>
       <div id="feedback-conteudo"></div>
     </div>
+
+    <div class="card">
+      <details>
+        <summary>O que o descritivo deve conter</summary>
+        <p class="muted">Use o template entregue pela organização ou escreva no seu formato,
+        desde que cubra estes pontos. Duas a quatro páginas bastam.</p>
+        <ol class="checklist">
+          <li><strong>Identificação</strong> — grupo, projeto e integrantes</li>
+          <li><strong>O problema</strong> — qual é a dor, quem é afetado, em que momento
+          aparece, e como é resolvido hoje</li>
+          <li><strong>Métrica de sucesso</strong> — um indicador objetivo, de preferência
+          no formato "de X para Y"</li>
+          <li><strong>A solução</strong> — o que faz, quais fontes usa e como as combina,
+          o que o usuário recebe, se antecipa algo e com que frequência roda</li>
+          <li><strong>Por que é diferente</strong> — e em relação a quê: ao mercado ou ao
+          que já existe no BTG</li>
+          <li><strong>Alcance</strong> — quem usaria hoje e quem mais poderia usar depois</li>
+          <li><strong>O que foi construído no evento</strong> — o que funciona de fato, com
+          quais dados, e o que ainda é simulado</li>
+          <li><strong>Viabilidade e próximos passos</strong> — dados necessários,
+          integrações, restrições de segurança e privacidade, e o caminho até um piloto</li>
+          <li><strong>Limitações conhecidas</strong> — o que ainda não resolve</li>
+        </ol>
+      </details>
+    </div>
   </div>
 
-  <script src="config.js?v=5"></script>
-  <script src="submit.js?v=5"></script>
+  <script src="config.js?v=6"></script>
+  <script src="submit.js?v=6"></script>
 </body>
 </html>
