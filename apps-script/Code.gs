@@ -55,6 +55,8 @@ function doPost(e) {
         return jsonResponse_(handleEvaluate_());
       case 'results':
         return jsonResponse_(handleResults_());
+      case 'diagnostico':
+        return jsonResponse_(handleDiagnostico_());
       default:
         return jsonResponse_({ ok: false, error: 'Ação desconhecida: ' + payload.action });
     }
@@ -761,6 +763,74 @@ function extrairJson_(texto) {
     }
   }
   throw new Error('A IA devolveu JSON incompleto: ' + limpo.substring(0, 300));
+}
+
+/**
+ * Confere cada propriedade de configuração e devolve um checklist do que está certo
+ * e do que está faltando ou trocado. Serve para validar o setup antes do evento sem
+ * precisar disparar uma avaliação de verdade.
+ */
+function handleDiagnostico_() {
+  var checagens = [];
+
+  function checar(nome, fn) {
+    try {
+      checagens.push({ item: nome, ok: true, detalhe: fn() });
+    } catch (err) {
+      checagens.push({ item: nome, ok: false, detalhe: String(err) });
+    }
+  }
+
+  checar('SHEET_ID', function () {
+    var id = getProp_('SHEET_ID');
+    if (!id) throw new Error('não configurada');
+    var nome = SpreadsheetApp.openById(id).getName();
+    return 'planilha "' + nome + '" acessível';
+  });
+
+  checar('DRIVE_FOLDER_ID', function () {
+    var id = getProp_('DRIVE_FOLDER_ID');
+    if (!id) throw new Error('não configurada');
+    return 'pasta "' + DriveApp.getFolderById(id).getName() + '" acessível';
+  });
+
+  checar('CRITERIA_DOC_ID', function () {
+    var id = getProp_('CRITERIA_DOC_ID');
+    if (!id) throw new Error('não configurada');
+    var texto = getCriteriaText_();
+    return 'documento "' + DocumentApp.openById(id).getName() + '" com ' +
+      texto.trim().length + ' caracteres';
+  });
+
+  checar('OPENROUTER_API_KEY', function () {
+    var key = getProp_('OPENROUTER_API_KEY');
+    if (!key) throw new Error('não configurada');
+    var response = UrlFetchApp.fetch('https://openrouter.ai/api/v1/key', {
+      headers: { Authorization: 'Bearer ' + key },
+      muteHttpExceptions: true
+    });
+    if (response.getResponseCode() !== 200) {
+      throw new Error('chave rejeitada (HTTP ' + response.getResponseCode() + ')');
+    }
+    var dados = JSON.parse(response.getContentText()).data || {};
+    return 'chave válida, credito restante: ' + dados.limit_remaining;
+  });
+
+  checar('OPENROUTER_MODEL', function () {
+    var model = getProp_('OPENROUTER_MODEL', 'google/gemini-3.7-flash');
+    var resposta = chamarIA_('Responda APENAS com o JSON {"ok": true}, sem markdown.');
+    if (!resposta || resposta.ok !== true) throw new Error('modelo não devolveu o JSON esperado');
+    return 'modelo "' + model + '" respondeu corretamente';
+  });
+
+  checar('TOP_X', function () {
+    var valor = Number(getProp_('TOP_X', '10'));
+    if (!valor || valor < 1) throw new Error('valor inválido: ' + getProp_('TOP_X'));
+    return valor + ' grupos serão recomendados';
+  });
+
+  var falhas = checagens.filter(function (c) { return !c.ok; }).length;
+  return { ok: falhas === 0, falhas: falhas, checagens: checagens };
 }
 
 function handleResults_() {

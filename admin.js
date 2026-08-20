@@ -1,6 +1,7 @@
 (function () {
   const btnAvaliar = document.getElementById('btn-avaliar');
   const btnAtualizar = document.getElementById('btn-atualizar');
+  const btnDiagnostico = document.getElementById('btn-diagnostico');
   const statusEl = document.getElementById('status');
   const tabela = document.getElementById('tabela-resultados');
   const corpoTabela = document.getElementById('corpo-tabela');
@@ -99,6 +100,29 @@
   });
 
   btnAtualizar.addEventListener('click', carregarResultados);
+
+  btnDiagnostico.addEventListener('click', async () => {
+    btnDiagnostico.disabled = true;
+    setStatus('info', '<span class="spinner"></span>Verificando configuração...');
+    try {
+      const response = await fetch(APPS_SCRIPT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action: 'diagnostico' })
+      });
+      const result = await response.json();
+      const linhas = (result.checagens || []).map((c) =>
+        `${c.ok ? '✅' : '❌'} <strong>${escapeHtml(c.item)}</strong>: ${escapeHtml(c.detalhe)}`
+      ).join('<br>');
+      setStatus(result.ok ? 'success' : 'error',
+        (result.ok ? 'Configuração completa.' : `${result.falhas} problema(s) encontrado(s).`) +
+        '<br><br>' + linhas);
+    } catch (err) {
+      setStatus('error', 'Não foi possível verificar: ' + err.message);
+    } finally {
+      btnDiagnostico.disabled = false;
+    }
+  });
 
   if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL.includes('COLE_AQUI')) {
     setStatus('error', 'A aplicação ainda não foi configurada (config.js).');
