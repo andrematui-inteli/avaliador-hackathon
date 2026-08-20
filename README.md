@@ -79,8 +79,21 @@ Apps Script continua servindo o código antigo mesmo com o editor mostrando o no
 ### Critérios de avaliação
 
 O texto do Doc apontado por `CRITERIA_DOC_ID` é lido a cada avaliação, então pode ser
-editado livremente até o dia do evento. Há um rascunho de partida em
-[`CRITERIOS-EXEMPLO.md`](CRITERIOS-EXEMPLO.md).
+editado livremente até o dia do evento. O texto a colar está em
+[`CRITERIOS.md`](CRITERIOS.md), escrito a partir do briefing da equipe de Marketing.
+
+Duas coisas nesse documento são deliberadas e não devem ser removidas sem cuidado:
+
+- **As faixas de pontuação ancoradas.** Sem elas o modelo concentra quase todas as notas
+  entre 70 e 85, o que torna a ordem dos primeiros colocados pouco confiável. Com elas,
+  em teste, cinco projetos de qualidade distinta receberam 96, 70, 48, 15 e 10.
+- **O bloco sobre o ecossistema ADA**, que está marcado como pendente. Enquanto não for
+  preenchido pelo Marketing, o documento instrui a avaliar viabilidade só pelos itens
+  gerais, em vez de pontuar às cegas uma dimensão que ninguém definiu.
+
+O documento contém pesos e faixas de pontuação, e esse mesmo texto também alimenta o
+prompt de feedback ao grupo. O prompt de feedback proíbe explicitamente reproduzir esses
+números — comportamento verificado em teste.
 
 ## Números medidos
 
