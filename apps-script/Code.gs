@@ -100,6 +100,47 @@ function findRowByGrupo_(sheet, grupoNormalizado) {
 }
 
 /**
+ * Serializa apenas as escritas na planilha. O lock é sempre de curta duração:
+ * nenhuma chamada à IA acontece dentro dele, para não travar as submissões dos
+ * grupos enquanto uma avaliação longa está rodando.
+ */
+function withSheetLock_(fn) {
+  var lock = LockService.getScriptLock();
+  var acquired = false;
+  for (var attempt = 0; attempt < 3 && !acquired; attempt++) {
+    acquired = lock.tryLock(10000);
+  }
+  if (!acquired) throw new Error('A planilha está ocupada no momento. Tente novamente em alguns segundos.');
+  try {
+    return fn();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+var EVAL_FLAG = 'EVAL_RUNNING_AT';
+var EVAL_FLAG_TTL_MS = 30 * 60 * 1000; // avaliação presumida travada depois disso
+
+/**
+ * Impede duas avaliações simultâneas sem usar o lock do script, que ficaria
+ * retido por minutos e derrubaria as submissões que chegassem nesse meio-tempo.
+ */
+function acquireEvalFlag_() {
+  var props = PropertiesService.getScriptProperties();
+  withSheetLock_(function () {
+    var startedAt = props.getProperty(EVAL_FLAG);
+    if (startedAt && (new Date().getTime() - Number(startedAt)) < EVAL_FLAG_TTL_MS) {
+      throw new Error('Já existe uma avaliação em andamento. Aguarde terminar e tente de novo.');
+    }
+    props.setProperty(EVAL_FLAG, String(new Date().getTime()));
+  });
+}
+
+function releaseEvalFlag_() {
+  PropertiesService.getScriptProperties().deleteProperty(EVAL_FLAG);
+}
+
+/**
  * Recebe a submissão do grupo: salva o PDF, gera o feedback qualitativo
  * (sem nenhuma nota) e grava/substitui a linha do grupo na planilha.
  * Uma nova submissão do mesmo nome de grupo substitui a anterior.
@@ -121,8 +162,26 @@ function handleSubmit_(payload) {
   var blob = Utilities.newBlob(bytes, 'application/pdf', safeName + ' - ' + filename);
   var file = folder.createFile(blob);
 
-  // O feedback é gerado antes de responder ao grupo, mas uma falha aqui não pode
-  // fazer a submissão ser perdida: o PDF já está salvo e a linha é gravada de todo jeito.
+  // A linha é gravada ANTES de gerar o feedback: se a chamada à IA falhar ou demorar,
+  // a submissão do grupo já está registrada e nunca é perdida.
+  var rowNumber = withSheetLock_(function () {
+    var sheet = getSheet_();
+    var rowIndex = findRowByGrupo_(sheet, normalize_(grupo));
+    var linha = [new Date(), grupo, projeto, file.getId(), file.getUrl(),
+      'gerando feedback', '', '', '', '', '', '', ''];
+
+    if (rowIndex > 0) {
+      var oldFileId = sheet.getRange(rowIndex, COL.FILE_ID).getValue();
+      if (oldFileId && oldFileId !== file.getId()) {
+        try { DriveApp.getFileById(oldFileId).setTrashed(true); } catch (err) { /* já removido */ }
+      }
+      sheet.getRange(rowIndex, 1, 1, HEADERS.length).setValues([linha]);
+      return rowIndex;
+    }
+    sheet.appendRow(linha);
+    return sheet.getLastRow();
+  });
+
   var base64Pdf = Utilities.base64Encode(bytes);
   var feedback = null;
   var feedbackErro = null;
@@ -133,27 +192,11 @@ function handleSubmit_(payload) {
   }
 
   var feedbackTexto = feedback ? formatFeedback_(feedback) : ('(feedback não gerado: ' + feedbackErro + ')');
-
-  var lock = LockService.getScriptLock();
-  lock.waitLock(30000);
-  try {
+  withSheetLock_(function () {
     var sheet = getSheet_();
-    var rowIndex = findRowByGrupo_(sheet, normalize_(grupo));
-    var linha = [new Date(), grupo, projeto, file.getId(), file.getUrl(),
-      'aguardando avaliacao', feedbackTexto, '', '', '', '', '', ''];
-
-    if (rowIndex > 0) {
-      var oldFileId = sheet.getRange(rowIndex, COL.FILE_ID).getValue();
-      if (oldFileId && oldFileId !== file.getId()) {
-        try { DriveApp.getFileById(oldFileId).setTrashed(true); } catch (err) { /* já removido */ }
-      }
-      sheet.getRange(rowIndex, 1, 1, HEADERS.length).setValues([linha]);
-    } else {
-      sheet.appendRow(linha);
-    }
-  } finally {
-    lock.releaseLock();
-  }
+    sheet.getRange(rowNumber, COL.STATUS).setValue('aguardando avaliacao');
+    sheet.getRange(rowNumber, COL.FEEDBACK).setValue(feedbackTexto);
+  });
 
   if (!feedback) {
     return {
@@ -226,10 +269,7 @@ function formatFeedback_(fb) {
 }
 
 function handleEvaluate_() {
-  var lock = LockService.getScriptLock();
-  if (!lock.tryLock(5000)) {
-    throw new Error('Já existe uma avaliação em andamento. Aguarde terminar e tente de novo.');
-  }
+  acquireEvalFlag_();
 
   try {
     var criteriaText = getCriteriaText_();
@@ -283,18 +323,20 @@ function handleEvaluate_() {
     }
 
     // Escreve status e o bloco de avaliação sem tocar na coluna de feedback qualitativo.
-    ranqueados.forEach(function (r) {
-      sheet.getRange(r._row, COL.STATUS).setValue('avaliado');
-      sheet.getRange(r._row, COL.SCORE_INDIVIDUAL, 1, 6).setValues([[
-        r.scoreIndividual, r.justificativaIndividual, r.scoreFinal,
-        r.comentarioRecalibracao, r.selecionado, new Date()
-      ]]);
-    });
-    comErro.forEach(function (r) {
-      sheet.getRange(r._row, COL.STATUS).setValue('erro');
-      sheet.getRange(r._row, COL.JUSTIFICATIVA).setValue(r.erro);
-      sheet.getRange(r._row, COL.SELECIONADO).setValue(false);
-      sheet.getRange(r._row, COL.TIMESTAMP_AVALIACAO).setValue(new Date());
+    withSheetLock_(function () {
+      ranqueados.forEach(function (r) {
+        sheet.getRange(r._row, COL.STATUS).setValue('avaliado');
+        sheet.getRange(r._row, COL.SCORE_INDIVIDUAL, 1, 6).setValues([[
+          r.scoreIndividual, r.justificativaIndividual, r.scoreFinal,
+          r.comentarioRecalibracao, r.selecionado, new Date()
+        ]]);
+      });
+      comErro.forEach(function (r) {
+        sheet.getRange(r._row, COL.STATUS).setValue('erro');
+        sheet.getRange(r._row, COL.JUSTIFICATIVA).setValue(r.erro);
+        sheet.getRange(r._row, COL.SELECIONADO).setValue(false);
+        sheet.getRange(r._row, COL.TIMESTAMP_AVALIACAO).setValue(new Date());
+      });
     });
 
     var resultados = ranqueados.map(function (r) {
@@ -316,7 +358,7 @@ function handleEvaluate_() {
     resultados.sort(function (a, b) { return (b.score_final || -1) - (a.score_final || -1); });
     return { ok: true, resultados: resultados, top_x: topX };
   } finally {
-    lock.releaseLock();
+    releaseEvalFlag_();
   }
 }
 
