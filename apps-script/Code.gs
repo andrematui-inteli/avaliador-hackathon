@@ -80,9 +80,20 @@ function normalize_(s) {
   return String(s || '').trim().toLowerCase();
 }
 
+// Um documento com uma frase solta passaria por "não vazio" e seria usado como critério,
+// produzindo notas sem fundamento. Exige um tamanho mínimo compatível com um documento real.
+var MIN_TAMANHO_CRITERIOS = 400;
+
 function getCriteriaText_() {
   var text = DocumentApp.openById(getProp_('CRITERIA_DOC_ID')).getBody().getText();
-  if (!text.trim()) throw new Error('O documento de critérios está vazio');
+  var limpo = text.trim();
+
+  if (!limpo) throw new Error('O documento de critérios está vazio');
+  if (limpo.length < MIN_TAMANHO_CRITERIOS) {
+    throw new Error('O documento de critérios tem apenas ' + limpo.length + ' caracteres e ' +
+      'parece incompleto (mínimo esperado: ' + MIN_TAMANHO_CRITERIOS + '). Confira se o ' +
+      'CRITERIA_DOC_ID aponta para o documento certo e se o texto foi salvo.');
+  }
   return text;
 }
 
