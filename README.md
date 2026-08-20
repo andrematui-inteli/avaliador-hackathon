@@ -58,7 +58,7 @@ Em `script.google.com` → ⚙️ Configurações do projeto → Propriedades do
 | Propriedade | Valor | Obrigatória |
 |---|---|---|
 | `OPENROUTER_API_KEY` | chave de openrouter.ai | sim |
-| `OPENROUTER_MODEL` | ex. `nvidia/nemotron-3-ultra-550b-a55b:free` | não (tem default) |
+| `OPENROUTER_MODEL` | `google/gemini-3.7-flash` | não (esse é o default) |
 | `TOP_X` | quantos grupos recomendar, ex. `10` | não (default 10) |
 | `CRITERIA_DOC_ID` | ID do Doc de critérios | sim |
 | `DRIVE_FOLDER_ID` | ID da pasta dos PDFs | sim |
@@ -82,18 +82,35 @@ O texto do Doc apontado por `CRITERIA_DOC_ID` é lido a cada avaliação, então
 editado livremente até o dia do evento. Há um rascunho de partida em
 [`CRITERIOS-EXEMPLO.md`](CRITERIOS-EXEMPLO.md).
 
+## Números medidos
+
+Testes reais com `google/gemini-3.7-flash` em agosto de 2026:
+
+| Medida | Valor |
+|---|---|
+| Latência de uma chamada | ~9 s (o modelo raciocina antes de responder e isso não pode ser desligado) |
+| Lote de 10 chamadas em paralelo | ~20 s, 10/10 sucesso, sem rate limit |
+| Custo de uma avaliação | ~US$ 0,0013 |
+| Custo de um feedback | ~US$ 0,0026 |
+| **Custo estimado do evento (40 grupos)** | **~US$ 0,20** |
+
+A avaliação usa `UrlFetchApp.fetchAll` em lotes de 10, então 40 grupos levam cerca de
+1 minuto em vez dos mais de 6 minutos que levariam em sequência.
+
 ## Limites conhecidos
 
-- **Cota de modelos gratuitos do OpenRouter:** 50 requisições por dia, ou 1.000 por dia
-  se a conta já comprou US$ 10 em créditos em algum momento. O consumo é de
-  aproximadamente `1 requisição por envio + 1 por grupo na avaliação + 1 recalibração`,
-  então 40 grupos custam ~81 requisições e **não cabem no limite de 50/dia**.
 - **Apenas texto é avaliado:** imagens, diagramas e o layout de tabelas do PDF não são
   considerados, porque o PDF é convertido em texto antes de ir para a IA.
 - **PDF sem texto extraível** (composto só de imagens sem OCR possível) falha na geração
   do feedback. A submissão ainda é registrada e o erro aparece na planilha.
 - **Tempo de execução do Apps Script:** 6 min em contas Google pessoais, 30 min em contas
-  Workspace. Com muitos grupos, a avaliação completa pode se aproximar do limite.
+  Workspace. Com os lotes paralelos a avaliação fica em ~1 min, bem dentro do limite.
+- **Cota de modelos gratuitos do OpenRouter** (só relevante se usar um modelo `:free`):
+  50 requisições/dia, ou 1.000/dia se a conta já comprou US$ 10 em créditos. Com 40 grupos
+  o consumo passa de 81 requisições, então o limite de 50/dia não é suficiente.
+- **Notas individuais ficam agrupadas:** em testes, projetos distintos receberam notas
+  entre 70 e 81. É por isso que existe a etapa de recalibração — sem ela, a ordem dos
+  primeiros colocados seria pouco confiável.
 
 ## Arquivos
 

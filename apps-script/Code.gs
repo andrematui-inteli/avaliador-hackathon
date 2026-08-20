@@ -35,6 +35,10 @@ var COL = {
 // Célula de planilha aceita ~50 mil caracteres; deixamos margem.
 var MAX_TEXTO_CELULA = 45000;
 
+// Quantas chamadas à IA disparar em paralelo por lote. Cada chamada leva ~9s, então
+// avaliar 40 grupos em sequência estouraria o limite de execução do Apps Script.
+var TAMANHO_LOTE_IA = 10;
+
 function doPost(e) {
   var payload;
   try {
@@ -334,39 +338,74 @@ function handleEvaluate_() {
     var data = sheet.getDataRange().getValues();
     var topX = Number(getProp_('TOP_X', '10'));
 
-    // Etapa 1: nota individual secreta, cada PDF avaliado isoladamente,
+    // Etapa 1: nota individual secreta, cada projeto avaliado isoladamente,
     // levando em conta também o feedback qualitativo gerado no envio.
-    var avaliados = [];
+    var candidatos = [];
     var comErro = [];
     for (var i = 1; i < data.length; i++) {
       var row = data[i];
-      var grupo = row[COL.GRUPO - 1];
-      var projeto = row[COL.PROJETO - 1];
-      var fileId = row[COL.FILE_ID - 1];
-      var feedbackTexto = row[COL.FEEDBACK - 1];
-      var textoSalvo = row[COL.TEXTO - 1];
-      if (!fileId) continue;
+      if (!row[COL.FILE_ID - 1]) continue;
+      candidatos.push({
+        grupo: row[COL.GRUPO - 1],
+        projeto: row[COL.PROJETO - 1],
+        fileId: row[COL.FILE_ID - 1],
+        feedback: String(row[COL.FEEDBACK - 1] || ''),
+        texto: String(row[COL.TEXTO - 1] || '').trim(),
+        _row: i + 1
+      });
+    }
 
-      var rowNumber = i + 1;
+    // Reaproveita o texto extraído no envio; só reconverte se estiver faltando
+    // (por exemplo, submissões feitas antes desta versão do script).
+    var prontos = [];
+    candidatos.forEach(function (c) {
+      if (c.texto) { prontos.push(c); return; }
       try {
-        // Reaproveita o texto extraído no envio; só reconverte se estiver faltando
-        // (por exemplo, submissões feitas antes desta versão do script).
-        var textoProjeto = String(textoSalvo || '').trim();
-        if (!textoProjeto) {
-          textoProjeto = extrairTextoPdf_(fileId);
-          sheet.getRange(rowNumber, COL.TEXTO).setValue(textoProjeto.substring(0, MAX_TEXTO_CELULA));
-        }
-        var evalResult = avaliarProjeto_(textoProjeto, criteriaText, projeto, grupo, feedbackTexto);
+        c.texto = extrairTextoPdf_(c.fileId);
+        sheet.getRange(c._row, COL.TEXTO).setValue(c.texto.substring(0, MAX_TEXTO_CELULA));
+        prontos.push(c);
+      } catch (err) {
+        comErro.push({ grupo: c.grupo, projeto: c.projeto, erro: String(err), _row: c._row });
+      }
+    });
+
+    // As chamadas vão em lotes paralelos: em sequência, 40 grupos passariam de
+    // 6 minutos só de espera de rede e estourariam o limite de execução.
+    var respostas = chamarIALote_(prontos.map(function (c) {
+      return promptAvaliacao_(c.texto, criteriaText, c.projeto, c.grupo, c.feedback);
+    }));
+
+    var avaliados = [];
+    prontos.forEach(function (c, idx) {
+      var resposta = respostas[idx];
+      if (!resposta || !resposta.ok) {
+        comErro.push({
+          grupo: c.grupo, projeto: c.projeto,
+          erro: (resposta && resposta.error) || 'Sem resposta da IA', _row: c._row
+        });
+        return;
+      }
+      try {
+        var avaliacao = normalizarAvaliacao_(resposta.data);
         avaliados.push({
-          grupo: grupo, projeto: projeto, feedback: String(feedbackTexto || ''),
-          scoreIndividual: evalResult.score, justificativaIndividual: evalResult.justificativa,
-          _row: rowNumber
+          grupo: c.grupo, projeto: c.projeto, feedback: c.feedback,
+          scoreIndividual: avaliacao.score, justificativaIndividual: avaliacao.justificativa,
+          _row: c._row
         });
       } catch (err) {
-        comErro.push({ grupo: grupo, projeto: projeto, erro: String(err), _row: rowNumber });
+        comErro.push({ grupo: c.grupo, projeto: c.projeto, erro: String(err), _row: c._row });
       }
-      Utilities.sleep(1000);
-    }
+    });
+
+    // Grava as notas individuais antes da recalibração: se a recalibração falhar ou
+    // a execução for interrompida, o trabalho já feito não é perdido.
+    withSheetLock_(function () {
+      avaliados.forEach(function (a) {
+        sheet.getRange(a._row, COL.SCORE_INDIVIDUAL, 1, 2).setValues([[
+          a.scoreIndividual, a.justificativaIndividual
+        ]]);
+      });
+    });
 
     // Etapa 2: recalibração vendo todos os grupos de uma vez (só texto, sem reenviar
     // os PDFs), combinando nota individual e análise qualitativa para recomendar o top X
@@ -385,13 +424,13 @@ function handleEvaluate_() {
       }
     }
 
-    // Escreve status e o bloco de avaliação sem tocar na coluna de feedback qualitativo.
+    // Completa o bloco de avaliação. As notas individuais já foram gravadas acima,
+    // então aqui só entram o resultado da recalibração e o status.
     withSheetLock_(function () {
       ranqueados.forEach(function (r) {
         sheet.getRange(r._row, COL.STATUS).setValue('avaliado');
-        sheet.getRange(r._row, COL.SCORE_INDIVIDUAL, 1, 6).setValues([[
-          r.scoreIndividual, r.justificativaIndividual, r.scoreFinal,
-          r.comentarioRecalibracao, r.selecionado, new Date()
+        sheet.getRange(r._row, COL.SCORE_FINAL, 1, 4).setValues([[
+          r.scoreFinal, r.comentarioRecalibracao, r.selecionado, new Date()
         ]]);
       });
       comErro.forEach(function (r) {
@@ -425,9 +464,9 @@ function handleEvaluate_() {
   }
 }
 
-/** Nota individual secreta de um projeto (nunca exposta ao grupo). */
-function avaliarProjeto_(textoProjeto, criteriaText, projectName, groupName, feedbackTexto) {
-  var prompt = [
+/** Prompt da nota individual secreta de um projeto (nunca exposta ao grupo). */
+function promptAvaliacao_(textoProjeto, criteriaText, projectName, groupName, feedbackTexto) {
+  return [
     'Você é um avaliador de um hackathon corporativo. Avalie o projeto descrito abaixo',
     'seguindo ESTRITAMENTE os critérios. Esta nota é interna e nunca será mostrada ao grupo.',
     '',
@@ -452,9 +491,12 @@ function avaliarProjeto_(textoProjeto, criteriaText, projectName, groupName, fee
     'Responda APENAS com um JSON no formato exato, sem markdown:',
     '{"score": <numero de 0 a 100>, "justificativa": "<explicação em até 3 frases>"}'
   ].join('\n');
+}
 
-  var parsed = chamarIA_(prompt);
-  return { score: Number(parsed.score), justificativa: String(parsed.justificativa || '') };
+function normalizarAvaliacao_(parsed) {
+  var score = Number(parsed.score);
+  if (isNaN(score)) throw new Error('A IA não devolveu uma nota numérica');
+  return { score: score, justificativa: String(parsed.justificativa || '') };
 }
 
 /**
@@ -558,17 +600,16 @@ function chamarRecalibracao_(criteriaText, avaliados, topX) {
   return parsed.ranking;
 }
 
-/**
- * Chamada de texto ao OpenRouter. Retorna o JSON já parseado da resposta do modelo.
- * Faz retry em 429 e erros 5xx.
- */
-function chamarIA_(prompt) {
+var URL_OPENROUTER = 'https://openrouter.ai/api/v1/chat/completions';
+
+/** Monta a requisição de texto ao OpenRouter, no formato aceito por fetch e fetchAll. */
+function montarRequestIA_(prompt) {
   var apiKey = getProp_('OPENROUTER_API_KEY');
   if (!apiKey) throw new Error('OPENROUTER_API_KEY não configurada nas Propriedades do Script');
-  var model = getProp_('OPENROUTER_MODEL', 'nvidia/nemotron-3-ultra-550b-a55b:free');
-  var url = 'https://openrouter.ai/api/v1/chat/completions';
+  var model = getProp_('OPENROUTER_MODEL', 'google/gemini-3.7-flash');
 
-  var options = {
+  return {
+    url: URL_OPENROUTER,
     method: 'post',
     contentType: 'application/json',
     headers: {
@@ -583,19 +624,32 @@ function chamarIA_(prompt) {
     }),
     muteHttpExceptions: true
   };
+}
 
+/** Interpreta uma resposta HTTP do OpenRouter e devolve o JSON do modelo. */
+function lerRespostaIA_(response) {
+  var json = JSON.parse(response.getContentText());
+  if (!json.choices || !json.choices.length) {
+    throw new Error('Resposta da IA sem conteúdo: ' + response.getContentText().substring(0, 300));
+  }
+  // Usa apenas 'content': em modelos com raciocínio, 'reasoning' costuma conter
+  // rascunhos de JSON que não são a resposta final.
+  return extrairJson_(String(json.choices[0].message.content || ''));
+}
+
+/**
+ * Chamada única ao OpenRouter, com retry em 429 e erros 5xx.
+ * Retorna o JSON já parseado da resposta do modelo.
+ */
+function chamarIA_(prompt) {
+  var request = montarRequestIA_(prompt);
   var lastError = null;
+
   for (var attempt = 0; attempt < 3; attempt++) {
-    var response = UrlFetchApp.fetch(url, options);
+    var response = UrlFetchApp.fetch(request.url, request);
     var code = response.getResponseCode();
 
-    if (code === 200) {
-      var json = JSON.parse(response.getContentText());
-      if (!json.choices || !json.choices.length) {
-        throw new Error('Resposta da IA sem conteúdo: ' + response.getContentText().substring(0, 300));
-      }
-      return extrairJson_(String(json.choices[0].message.content || ''));
-    }
+    if (code === 200) return lerRespostaIA_(response);
 
     if (code === 429 || code >= 500) {
       lastError = 'HTTP ' + code + ': ' + response.getContentText().substring(0, 300);
@@ -606,6 +660,52 @@ function chamarIA_(prompt) {
     throw new Error('OpenRouter HTTP ' + code + ': ' + response.getContentText().substring(0, 300));
   }
   throw new Error(lastError || 'Falha ao chamar o OpenRouter após 3 tentativas');
+}
+
+/**
+ * Executa vários prompts em lotes paralelos via fetchAll, reenviando apenas os que
+ * falharam com 429 ou erro 5xx. Devolve um array na mesma ordem dos prompts, com
+ * {ok: true, data} ou {ok: false, error} em cada posição — uma falha isolada nunca
+ * interrompe as demais.
+ */
+function chamarIALote_(prompts) {
+  var resultados = new Array(prompts.length);
+  var pendentes = prompts.map(function (_, idx) { return idx; });
+
+  for (var tentativa = 0; tentativa < 3 && pendentes.length > 0; tentativa++) {
+    var reenviar = [];
+
+    for (var inicio = 0; inicio < pendentes.length; inicio += TAMANHO_LOTE_IA) {
+      var fatia = pendentes.slice(inicio, inicio + TAMANHO_LOTE_IA);
+      var requests = fatia.map(function (idx) { return montarRequestIA_(prompts[idx]); });
+      var responses = UrlFetchApp.fetchAll(requests);
+
+      responses.forEach(function (response, k) {
+        var idx = fatia[k];
+        var code = response.getResponseCode();
+
+        if (code === 200) {
+          try {
+            resultados[idx] = { ok: true, data: lerRespostaIA_(response) };
+          } catch (err) {
+            resultados[idx] = { ok: false, error: String(err) };
+          }
+          return;
+        }
+
+        resultados[idx] = {
+          ok: false,
+          error: 'OpenRouter HTTP ' + code + ': ' + response.getContentText().substring(0, 300)
+        };
+        if (code === 429 || code >= 500) reenviar.push(idx);
+      });
+    }
+
+    pendentes = reenviar;
+    if (pendentes.length > 0) Utilities.sleep(3000 * (tentativa + 1));
+  }
+
+  return resultados;
 }
 
 /**
