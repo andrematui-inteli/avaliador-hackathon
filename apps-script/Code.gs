@@ -3,28 +3,37 @@
  *
  * Script Properties necessárias (Configurações do projeto > Propriedades do script):
  *   OPENROUTER_API_KEY - chave da API do OpenRouter (openrouter.ai)
- *   OPENROUTER_MODEL   - ex. "google/gemini-2.5-flash" (opcional, default abaixo)
+ *   OPENROUTER_MODEL   - ex. "nvidia/nemotron-3-ultra-550b-a55b:free" (opcional, default abaixo)
  *   TOP_X              - quantos grupos recomendar (opcional, default 10)
  *   CRITERIA_DOC_ID    - ID do Google Doc com os critérios de avaliação
  *   DRIVE_FOLDER_ID    - ID da pasta do Drive onde os PDFs são salvos
  *   SHEET_ID           - ID da Planilha usada como banco de dados
  *
  * Fluxo:
- *   submit   -> salva o PDF, gera FEEDBACK QUALITATIVO (sem nota) e devolve ao grupo
+ *   submit   -> salva o PDF, extrai o texto, gera FEEDBACK QUALITATIVO (sem nota)
+ *               e devolve ao grupo
  *   evaluate -> nota individual secreta por projeto + recalibração comparativa (top X)
  *   results  -> lê o estado atual da planilha
+ *
+ * O PDF é convertido em texto pelo próprio Drive e só o texto vai para a IA.
+ * Imagens, diagramas e o layout de tabelas do PDF não entram na avaliação.
  */
 
 var HEADERS = ['Timestamp Envio', 'Grupo', 'Projeto', 'Drive File Id', 'Drive File Url',
   'Status', 'Feedback Qualitativo', 'Score Individual', 'Justificativa Individual',
-  'Score Final', 'Comentario Recalibracao', 'Selecionado', 'Timestamp Avaliacao'];
+  'Score Final', 'Comentario Recalibracao', 'Selecionado', 'Timestamp Avaliacao',
+  'Texto Extraido'];
 
 // Índices de coluna (1-based), para não espalhar números mágicos pelo código.
 var COL = {
   TIMESTAMP_ENVIO: 1, GRUPO: 2, PROJETO: 3, FILE_ID: 4, FILE_URL: 5,
   STATUS: 6, FEEDBACK: 7, SCORE_INDIVIDUAL: 8, JUSTIFICATIVA: 9,
-  SCORE_FINAL: 10, COMENTARIO: 11, SELECIONADO: 12, TIMESTAMP_AVALIACAO: 13
+  SCORE_FINAL: 10, COMENTARIO: 11, SELECIONADO: 12, TIMESTAMP_AVALIACAO: 13,
+  TEXTO: 14
 };
+
+// Célula de planilha aceita ~50 mil caracteres; deixamos margem.
+var MAX_TEXTO_CELULA = 45000;
 
 function doPost(e) {
   var payload;
@@ -141,6 +150,46 @@ function releaseEvalFlag_() {
 }
 
 /**
+ * Extrai o texto de um PDF já salvo no Drive, usando a conversão nativa do Drive
+ * (que aplica OCR quando o PDF é escaneado). Copia o arquivo como Google Doc,
+ * lê o texto e descarta o Doc temporário.
+ *
+ * Só o texto é enviado à IA — imagens, diagramas e o layout das tabelas do PDF
+ * não são considerados na avaliação.
+ */
+function extrairTextoPdf_(fileId) {
+  var url = 'https://www.googleapis.com/drive/v3/files/' + fileId +
+    '/copy?ocrLanguage=pt&supportsAllDrives=true';
+  var response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    payload: JSON.stringify({
+      name: 'tmp-ocr-' + fileId,
+      mimeType: 'application/vnd.google-apps.document'
+    }),
+    muteHttpExceptions: true
+  });
+
+  if (response.getResponseCode() !== 200) {
+    throw new Error('Falha ao converter o PDF em texto (HTTP ' + response.getResponseCode() +
+      '): ' + response.getContentText().substring(0, 300));
+  }
+
+  var docId = JSON.parse(response.getContentText()).id;
+  try {
+    var texto = DocumentApp.openById(docId).getBody().getText();
+    if (!texto || !texto.trim()) {
+      throw new Error('O PDF não contém texto extraível. Se ele for composto apenas de ' +
+        'imagens, reenvie um PDF com texto selecionável.');
+    }
+    return texto.trim();
+  } finally {
+    try { DriveApp.getFileById(docId).setTrashed(true); } catch (err) { /* ignora limpeza */ }
+  }
+}
+
+/**
  * Recebe a submissão do grupo: salva o PDF, gera o feedback qualitativo
  * (sem nenhuma nota) e grava/substitui a linha do grupo na planilha.
  * Uma nova submissão do mesmo nome de grupo substitui a anterior.
@@ -168,7 +217,7 @@ function handleSubmit_(payload) {
     var sheet = getSheet_();
     var rowIndex = findRowByGrupo_(sheet, normalize_(grupo));
     var linha = [new Date(), grupo, projeto, file.getId(), file.getUrl(),
-      'gerando feedback', '', '', '', '', '', '', ''];
+      'gerando feedback', '', '', '', '', '', '', '', ''];
 
     if (rowIndex > 0) {
       var oldFileId = sheet.getRange(rowIndex, COL.FILE_ID).getValue();
@@ -182,20 +231,24 @@ function handleSubmit_(payload) {
     return sheet.getLastRow();
   });
 
-  var base64Pdf = Utilities.base64Encode(bytes);
+  // O texto é extraído uma única vez aqui e reaproveitado na avaliação,
+  // para não converter o mesmo PDF de novo mais tarde.
   var feedback = null;
-  var feedbackErro = null;
+  var erroEtapa = null;
+  var textoPdf = '';
   try {
-    feedback = gerarFeedbackQualitativo_(base64Pdf, getCriteriaText_(), projeto, grupo);
+    textoPdf = extrairTextoPdf_(file.getId());
+    feedback = gerarFeedbackQualitativo_(textoPdf, getCriteriaText_(), projeto, grupo);
   } catch (err) {
-    feedbackErro = String(err);
+    erroEtapa = String(err);
   }
 
-  var feedbackTexto = feedback ? formatFeedback_(feedback) : ('(feedback não gerado: ' + feedbackErro + ')');
+  var feedbackTexto = feedback ? formatFeedback_(feedback) : ('(feedback não gerado: ' + erroEtapa + ')');
   withSheetLock_(function () {
     var sheet = getSheet_();
     sheet.getRange(rowNumber, COL.STATUS).setValue('aguardando avaliacao');
     sheet.getRange(rowNumber, COL.FEEDBACK).setValue(feedbackTexto);
+    sheet.getRange(rowNumber, COL.TEXTO).setValue(textoPdf.substring(0, MAX_TEXTO_CELULA));
   });
 
   if (!feedback) {
@@ -214,10 +267,10 @@ function handleSubmit_(payload) {
  * Feedback devolvido ao grupo na hora do envio. Estritamente qualitativo:
  * o prompt proíbe notas, pontuações, percentuais e comparações com outros grupos.
  */
-function gerarFeedbackQualitativo_(base64Pdf, criteriaText, projectName, groupName) {
+function gerarFeedbackQualitativo_(textoProjeto, criteriaText, projectName, groupName) {
   var prompt = [
     'Você é um mentor de um hackathon corporativo dando retorno construtivo a um grupo',
-    'que acabou de enviar o descritivo do projeto. Analise o PDF anexado à luz dos critérios abaixo.',
+    'que acabou de enviar o descritivo do projeto. Analise o descritivo à luz dos critérios abaixo.',
     '',
     '=== CRITÉRIOS DE AVALIAÇÃO DO EVENTO ===',
     criteriaText,
@@ -225,6 +278,10 @@ function gerarFeedbackQualitativo_(base64Pdf, criteriaText, projectName, groupNa
     '',
     'Grupo: ' + groupName,
     'Projeto: ' + (projectName || '(não informado)'),
+    '',
+    '=== DESCRITIVO DO PROJETO ===',
+    textoProjeto,
+    '=== FIM DO DESCRITIVO ===',
     '',
     'REGRAS OBRIGATÓRIAS DO FEEDBACK:',
     '- NUNCA inclua nota, pontuação, score, percentual, estrelas, conceito (A/B/C) ou',
@@ -245,7 +302,7 @@ function gerarFeedbackQualitativo_(base64Pdf, criteriaText, projectName, groupNa
     'Use de 2 a 4 itens em cada lista.'
   ].join('\n');
 
-  var parsed = chamarIA_(prompt, base64Pdf);
+  var parsed = chamarIA_(prompt);
   return {
     resumo: String(parsed.resumo || ''),
     pontos_fortes: asStringArray_(parsed.pontos_fortes),
@@ -287,13 +344,19 @@ function handleEvaluate_() {
       var projeto = row[COL.PROJETO - 1];
       var fileId = row[COL.FILE_ID - 1];
       var feedbackTexto = row[COL.FEEDBACK - 1];
+      var textoSalvo = row[COL.TEXTO - 1];
       if (!fileId) continue;
 
       var rowNumber = i + 1;
       try {
-        var blob = DriveApp.getFileById(fileId).getBlob();
-        var base64Pdf = Utilities.base64Encode(blob.getBytes());
-        var evalResult = avaliarProjeto_(base64Pdf, criteriaText, projeto, grupo, feedbackTexto);
+        // Reaproveita o texto extraído no envio; só reconverte se estiver faltando
+        // (por exemplo, submissões feitas antes desta versão do script).
+        var textoProjeto = String(textoSalvo || '').trim();
+        if (!textoProjeto) {
+          textoProjeto = extrairTextoPdf_(fileId);
+          sheet.getRange(rowNumber, COL.TEXTO).setValue(textoProjeto.substring(0, MAX_TEXTO_CELULA));
+        }
+        var evalResult = avaliarProjeto_(textoProjeto, criteriaText, projeto, grupo, feedbackTexto);
         avaliados.push({
           grupo: grupo, projeto: projeto, feedback: String(feedbackTexto || ''),
           scoreIndividual: evalResult.score, justificativaIndividual: evalResult.justificativa,
@@ -363,10 +426,10 @@ function handleEvaluate_() {
 }
 
 /** Nota individual secreta de um projeto (nunca exposta ao grupo). */
-function avaliarProjeto_(base64Pdf, criteriaText, projectName, groupName, feedbackTexto) {
+function avaliarProjeto_(textoProjeto, criteriaText, projectName, groupName, feedbackTexto) {
   var prompt = [
-    'Você é um avaliador de um hackathon corporativo. Avalie o projeto descrito no PDF anexado',
-    'seguindo ESTRITAMENTE os critérios abaixo. Esta nota é interna e nunca será mostrada ao grupo.',
+    'Você é um avaliador de um hackathon corporativo. Avalie o projeto descrito abaixo',
+    'seguindo ESTRITAMENTE os critérios. Esta nota é interna e nunca será mostrada ao grupo.',
     '',
     '=== CRITÉRIOS DE AVALIAÇÃO ===',
     criteriaText,
@@ -375,18 +438,22 @@ function avaliarProjeto_(base64Pdf, criteriaText, projectName, groupName, feedba
     'Grupo: ' + groupName,
     'Projeto: ' + (projectName || '(não informado)'),
     '',
+    '=== DESCRITIVO DO PROJETO ===',
+    textoProjeto,
+    '=== FIM DO DESCRITIVO ===',
+    '',
     '=== ANÁLISE QUALITATIVA JÁ FEITA SOBRE ESTE PROJETO ===',
     String(feedbackTexto || '(sem análise qualitativa registrada)'),
     '=== FIM DA ANÁLISE QUALITATIVA ===',
     '',
-    'Considere tanto o conteúdo do PDF quanto a análise qualitativa acima. Dê peso especial ao',
+    'Considere tanto o descritivo quanto a análise qualitativa acima. Dê peso especial ao',
     'POTENCIAL DE IMPACTO do projeto segundo os critérios do evento.',
     '',
     'Responda APENAS com um JSON no formato exato, sem markdown:',
     '{"score": <numero de 0 a 100>, "justificativa": "<explicação em até 3 frases>"}'
   ].join('\n');
 
-  var parsed = chamarIA_(prompt, base64Pdf);
+  var parsed = chamarIA_(prompt);
   return { score: Number(parsed.score), justificativa: String(parsed.justificativa || '') };
 }
 
@@ -484,7 +551,7 @@ function chamarRecalibracao_(criteriaText, avaliados, topX) {
     ' "selecionado": <true|false>, "comentario": "<até 2 frases justificando a posição e o potencial de impacto>"}]}'
   ].join('\n');
 
-  var parsed = chamarIA_(prompt, null);
+  var parsed = chamarIA_(prompt);
   if (!parsed.ranking || !Array.isArray(parsed.ranking)) {
     throw new Error('Resposta de recalibração sem "ranking" válido');
   }
@@ -492,22 +559,14 @@ function chamarRecalibracao_(criteriaText, avaliados, topX) {
 }
 
 /**
- * Chamada única ao OpenRouter. Se base64Pdf vier preenchido, anexa o PDF à mensagem.
- * Retorna o JSON já parseado da resposta do modelo. Faz retry em 429 e erros 5xx.
+ * Chamada de texto ao OpenRouter. Retorna o JSON já parseado da resposta do modelo.
+ * Faz retry em 429 e erros 5xx.
  */
-function chamarIA_(prompt, base64Pdf) {
+function chamarIA_(prompt) {
   var apiKey = getProp_('OPENROUTER_API_KEY');
   if (!apiKey) throw new Error('OPENROUTER_API_KEY não configurada nas Propriedades do Script');
-  var model = getProp_('OPENROUTER_MODEL', 'google/gemini-2.5-flash');
+  var model = getProp_('OPENROUTER_MODEL', 'nvidia/nemotron-3-ultra-550b-a55b:free');
   var url = 'https://openrouter.ai/api/v1/chat/completions';
-
-  var content = [{ type: 'text', text: prompt }];
-  if (base64Pdf) {
-    content.push({
-      type: 'file',
-      file: { filename: 'projeto.pdf', file_data: 'data:application/pdf;base64,' + base64Pdf }
-    });
-  }
 
   var options = {
     method: 'post',
@@ -519,7 +578,8 @@ function chamarIA_(prompt, base64Pdf) {
     },
     payload: JSON.stringify({
       model: model,
-      messages: [{ role: 'user', content: content }]
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.2
     }),
     muteHttpExceptions: true
   };
@@ -534,13 +594,7 @@ function chamarIA_(prompt, base64Pdf) {
       if (!json.choices || !json.choices.length) {
         throw new Error('Resposta da IA sem conteúdo: ' + response.getContentText().substring(0, 300));
       }
-      var text = String(json.choices[0].message.content || '');
-      var cleaned = text.replace(/```json/gi, '').replace(/```/g, '').trim();
-      try {
-        return JSON.parse(cleaned);
-      } catch (err) {
-        throw new Error('A IA não devolveu JSON válido: ' + cleaned.substring(0, 300));
-      }
+      return extrairJson_(String(json.choices[0].message.content || ''));
     }
 
     if (code === 429 || code >= 500) {
@@ -552,6 +606,47 @@ function chamarIA_(prompt, base64Pdf) {
     throw new Error('OpenRouter HTTP ' + code + ': ' + response.getContentText().substring(0, 300));
   }
   throw new Error(lastError || 'Falha ao chamar o OpenRouter após 3 tentativas');
+}
+
+/**
+ * Extrai o objeto JSON da resposta do modelo. Modelos menores costumam embrulhar o
+ * JSON em cercas de markdown ou em texto explicativo, então isolamos o primeiro
+ * objeto balanceado em vez de confiar na resposta vir limpa.
+ */
+function extrairJson_(texto) {
+  var limpo = texto.replace(/```json/gi, '').replace(/```/g, '').trim();
+  try {
+    return JSON.parse(limpo);
+  } catch (err) { /* tenta isolar o objeto abaixo */ }
+
+  var inicio = limpo.indexOf('{');
+  if (inicio === -1) {
+    throw new Error('A IA não devolveu JSON: ' + limpo.substring(0, 300));
+  }
+
+  var profundidade = 0;
+  var emString = false;
+  var escapando = false;
+  for (var i = inicio; i < limpo.length; i++) {
+    var ch = limpo.charAt(i);
+    if (escapando) { escapando = false; continue; }
+    if (ch === '\\') { escapando = true; continue; }
+    if (ch === '"') { emString = !emString; continue; }
+    if (emString) continue;
+    if (ch === '{') profundidade++;
+    else if (ch === '}') {
+      profundidade--;
+      if (profundidade === 0) {
+        var candidato = limpo.substring(inicio, i + 1);
+        try {
+          return JSON.parse(candidato);
+        } catch (err2) {
+          throw new Error('A IA não devolveu JSON válido: ' + candidato.substring(0, 300));
+        }
+      }
+    }
+  }
+  throw new Error('A IA devolveu JSON incompleto: ' + limpo.substring(0, 300));
 }
 
 function handleResults_() {
